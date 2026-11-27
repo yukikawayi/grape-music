@@ -173,7 +173,15 @@ fun LibraryScreen(
     // 每个视图各一份：在专辑页滚到位置 2、切去艺术家再切回来，专辑仍停在位置 2；
     // 应用进程退出后全部重置。注意 view 变化时这里取到的是另一份状态实例，
     // LazyColumn 换 state 参数即切换滚动上下文，无需任何手动复位。
-    val listState = vm.libraryListState(view.key)
+    //
+    // 文件夹视图**按目录**再各拿一份：进子目录 = 换一份新状态（从顶部开始），
+    // 返回 = 换回父目录那份（还停在原来那一行），全程没有任何滚动动作 ——
+    // 与专辑/艺术家详情页（DetailScreen 用 "detail:type:value" 作 key）是同一个做法。
+    // 之前整个视图共用一份状态：进目录时那份旧的滚动位置会被套到新内容上（越界后夹在
+    // 列表末尾），再由 effect 滚回目标行，肉眼就是「进去先跳到顶/底、返回时再滚回来」。
+    val scrollKey =
+        if (view == LibraryView.FOLDER) "${view.key}|${folderMode.name}|$folderPath" else view.key
+    val listState = vm.libraryListState(scrollKey)
     val gridState = vm.libraryGridState(view.key)
 
     // 当前数据源（视频视图用视频列表）
@@ -321,15 +329,14 @@ fun LibraryScreen(
     // 艺术家=名称/歌曲数；全部/视频=标题/年份/专辑/艺术家/文件大小/时长/文件夹
     val sortOptions = sortOptionsFor(view)
 
-    // 进出目录 / 切浏览方式时回到列表顶部 —— 只在用户点击的瞬间显式调用 goTop()。
+    // 进出目录不需要「滚回去」：文件夹视图按目录各持一份滚动状态（见上面的 scrollKey），
+    // 切目录等于切状态，父目录那份一直停在原处，返回时第一帧就是原来那一屏。
+    // 所以 goTop() 只服务真正要回顶的动作：切排序、在根目录再点当前标签。
     // 不用「LaunchedEffect 检测 key 变化 → 滚顶」的间接推断：view/folderMode 来自 DataStore，
     // composition 重建（从播放页返回）时先按默认值渲染一帧，几十毫秒后持久化值异步到达，
     // key 变化会被误判成用户切换而滚顶 —— 实测正是「从播放页返回总是回到顶部」的根因。
-    // 但滚顶也不能放在点击回调里直接 scrollToItem：内容切换的重组要等下一帧应用，
-    // 会露出「旧内容先滚顶、再换新内容」的中间帧。所以这里用两级：用户点击只置
-    // pending 标志，实际滚动由下面的 LaunchedEffect 在新内容重组应用后执行。
-    // 切视图（歌曲/专辑/艺术家/文件夹）不滚顶：滚动状态按视图各存一份（VM），切换后
-    // 各自回到自己上次的位置，天然无需重置。
+    // 也不能在点击回调里直接 scrollToItem：内容切换的重组要等下一帧应用，
+    // 会露出「旧内容先滚、再换新内容」的中间帧。
     //
     // 请求带**目标视图 key**：只有发起请求的那个视图才消费它。以前是一个全局 boolean，
     // 一旦用户在文件夹里点进子目录后紧接着点别的视图标签，effect 会在「新视图」上执行，
@@ -353,13 +360,18 @@ fun LibraryScreen(
         goTopFor = null
     }
 
+    // 切目录 = 换 listState，新目录天然从顶部开始、旧目录的位置原样留在自己那份状态里。
+    fun navigateFolder(target: String) {
+        folderPath = target
+    }
+
     // 层级视图在子目录 / 平铺视图进入文件夹时，系统返回键 = 回到上一层（而不是退出页面）
     BackHandler(
         enabled = view == LibraryView.FOLDER && folderPath.isNotEmpty(),
     ) {
-        folderPath = if (folderMode == FolderBrowseMode.FLAT) ""
-        else folderPath.substringBeforeLast('/')
-        goTop()
+        navigateFolder(
+            if (folderMode == FolderBrowseMode.FLAT) "" else folderPath.substringBeforeLast('/')
+        )
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -378,10 +390,11 @@ fun LibraryScreen(
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                     onClick = {
                         if (v.key == view.key) {
-                            // 再点当前标签 = 回到本视图的顶层（文件夹视图回到根目录）+ 回顶。
-                            // 只动自己这一个视图的状态，不会误伤其他视图。
-                            if (folderPath.isNotEmpty()) folderPath = ""
-                            goTop()
+                            // 再点当前标签：文件夹视图在子目录里 = 回到根目录（根目录那份滚动状态
+                            // 还停在它上次的位置，与「返回上一层」一致）；已经在根目录、或不是文件夹
+                            // 视图，才是真的「回到顶部」。只动自己这一个视图的状态。
+                            if (view == LibraryView.FOLDER && folderPath.isNotEmpty()) navigateFolder("")
+                            else goTop()
                         } else {
                             // 切视图：**不清 folderPath** —— 各视图各自记住自己的位置（含文件夹层级），
                             // 切走再切回来还是原处。这里也绝不能 goTop()：goTop 命中的是「新视图」的状态，
@@ -673,11 +686,11 @@ fun LibraryScreen(
                     }
                     if (folderPath.isNotEmpty()) {
                         item(key = "back") {
-                            BackRow("返回上一级") { folderPath = folderPath.substringBeforeLast('/'); goTop() }
+                            BackRow("返回上一级") { navigateFolder(folderPath.substringBeforeLast('/')) }
                         }
                     }
                     itemsIndexed(hierarchy.children, key = { _, child -> "dir:${child.path}" }) { _, child ->
-                        FolderRowItem(child) { folderPath = child.path; goTop() }
+                        FolderRowItem(child) { navigateFolder(child.path) }
                     }
                     itemsIndexed(hierarchy.direct, key = { _, item -> item.url }) { _, item ->
                         SongRowItem(item)
@@ -697,7 +710,7 @@ fun LibraryScreen(
                         }
                     }
                     itemsIndexed(flatFolders, key = { _, folder -> "flat:${folder.path}" }) { _, folder ->
-                        FolderRowItem(folder) { folderPath = folder.path; goTop() }
+                        FolderRowItem(folder) { navigateFolder(folder.path) }
                     }
                 } else if (view == LibraryView.FOLDER && folderMode == FolderBrowseMode.FLAT) {
                     // —— 文件夹·平铺视图（歌曲层）：点进文件夹后显示该文件夹的歌曲 ——
@@ -705,7 +718,7 @@ fun LibraryScreen(
                         PathBreadcrumb(folderPath)
                     }
                     item(key = "flat-back") {
-                        BackRow("返回文件夹列表") { folderPath = ""; goTop() }
+                        BackRow("返回文件夹列表") { navigateFolder("") }
                     }
                     itemsIndexed(flatSongs, key = { _, item -> item.url }) { _, item ->
                         SongRowItem(item)
