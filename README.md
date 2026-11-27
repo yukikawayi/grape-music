@@ -31,6 +31,13 @@
 
 > 典型用法：手机上跑一个 OpenList（默认 `http://127.0.0.1:5244`），把夸克/阿里/115/OneDrive 挂进来，然后在葡萄音乐里填同一个地址。
 
+## 预览
+
+| 音乐库 | 播放页 | 歌词 |
+|:--:|:--:|:--:|
+| <img src="docs/screenshots/music-library.jpg" width="230" alt="音乐库" /> | <img src="docs/screenshots/player.jpg" width="230" alt="播放页" /> | <img src="docs/screenshots/lyrics.jpg" width="230" alt="歌词页" /> |
+| 四视图 · A–Z 索引 · 迷你播放条 | 封面主色驱动全局配色 | 中日双语歌词 · 逐行高亮 |
+
 ## 功能
 
 ### 播放
