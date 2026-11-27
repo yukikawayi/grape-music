@@ -15,7 +15,7 @@ import androidx.room.RoomDatabase
         SettingEntry::class,
         MetaCache::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -214,6 +214,18 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v13：lyrics 增加 translationFirst（内嵌歌词格式：译文是否写在原词上方）。
+         *
+         * 老行补 0 = 「先原词后翻译」，正是绝大多数 LRC 的写法，升级后不会有任何歌改变显示。
+         * NOT NULL DEFAULT，纯 ALTER 即可，不必重建表。
+         */
+        private val MIGRATION_12_13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE lyrics ADD COLUMN translationFirst INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
          * [dbName] 传文件名（media.db = 应用私有 databases/）或绝对路径
          * （数据存放位置设在用户选择的文件夹时，SQLiteOpenHelper 对绝对路径按原样打开）。
          */
@@ -226,6 +238,7 @@ abstract class AppDatabase : RoomDatabase() {
                 ).addMigrations(
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
                         MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
+                        MIGRATION_12_13,
                     ).build().also { instance = it }
             }
     }

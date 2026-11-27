@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import com.grape.player.ui.AppViewModel
 import com.grape.player.util.LrcParser
 import com.grape.player.util.LyricLine
+import com.grape.player.util.LyricOrder
 import com.grape.player.util.LyricQuality
 import com.grape.player.util.LyricSource
 import kotlinx.coroutines.Dispatchers
@@ -155,16 +156,21 @@ fun LyricViewer(
     // 「歌词是否已落定」：跑完之前不显示「暂无歌词」，免得一闪而过（真正没词时它才是终态）
     var lyricSettled by remember(current?.url) { mutableStateOf(false) }
     val lyricFetching by vm.lyricFetching.collectAsState()
-    val lyrics by produceState<List<LyricLine>>(
-        emptyList(),
+
+    // 第一步：把「正文 + 独立译文 + 这首的格式」取到手，不解析。
+    // 只有它依赖曲目 —— 解析（含双语配对）放到下面的第二步，于是切换格式时只重跑解析，
+    // 不会回表读库、更不会重新联网取词。
+    // 格式和正文同一次读库拿出：分两次读会出现「新歌词已经解析完、格式还没读回来」，
+    // 那一帧的配对顺序就是错的。null = 还没取到（区别于「取到了但确实没词」）。
+    val rawLyric by produceState<RawLyricSource?>(
+        null,
         key1 = current?.url,
         key2 = offsetReloadKey,
         key3 = queueVersion,
     ) {
         lyricSettled = false
         if (current == null) {
-            value = emptyList()
-            lyricSettled = true
+            value = RawLyricSource("", "", false)
             return@produceState
         }
         val cached = vm.repo.getLyric(current.url)
@@ -200,8 +206,32 @@ fun LyricViewer(
             else -> cached?.source.orEmpty()
         }
         vm.ensureLyricRow(current.url, lrc, rowSource)
-        // 解析挪到 Default：QRC 解密出来的歌词动辄几百 KB，主线程解析会直接掉帧/卡顿
-        value = withContext(Dispatchers.Default) { LrcParser.parse(lrc, trans) }
+        value = RawLyricSource(lrc, trans, cached?.translationFirst ?: false)
+        // 确实没词：不必等解析，这里就落定（重载同一首时下面的解析不一定会重跑）
+        if (lrc.isBlank()) lyricSettled = true
+    }
+
+    // 内嵌歌词格式（译文写在原词上方？）：**按曲目**存，只影响这一首。
+    // 库里那一份随歌词正文一起读回来（同一个快照），所以解析的第一帧就是正确顺序；
+    // 刚在「词」弹层勾过的那首以内存值为准 —— 勾选当场生效，不用等写库完成。
+    val formatOverride by vm.lyricFormatOverride.collectAsState()
+    val formatNow = formatOverride
+    val translationFirst =
+        if (formatNow != null && formatNow.first == current?.url) formatNow.second
+        else rawLyric?.translationFirst ?: false
+    val lyricOrder = if (translationFirst) LyricOrder.TRANSLATION_FIRST else LyricOrder.ORIGINAL_FIRST
+
+    // 第二步：解析。解析挪到 Default：QRC 解密出来的歌词动辄几百 KB，主线程解析会直接掉帧/卡顿。
+    // 双语配对也在这里做（见 LrcParser），所以「原文/译文顺序」一改就整篇重解析。
+    val lyrics by produceState<List<LyricLine>>(emptyList(), rawLyric, lyricOrder) {
+        val raw = rawLyric
+        // 还没取到词：保持空列表且不落定 —— 否则「正在匹配歌词…」会先闪一下「暂无歌词」
+        if (raw == null) return@produceState
+        value = if (raw.lrc.isBlank()) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.Default) { LrcParser.parse(raw.lrc, raw.translation, lyricOrder) }
+        }
         lyricSettled = true
     }
 
@@ -587,6 +617,19 @@ private const val LYRIC_RESUME_DELAY_MS = 5_000L
 private const val LYRIC_TOP_GAP_ITEMS = 1
 private const val LYRIC_TOP_GAP_KEY = "lyric_top_gap"
 private const val LYRIC_BOTTOM_GAP_KEY = "lyric_bottom_gap"
+
+/**
+ * 「取到手但还没解析」的歌词：正文 + 独立译文 + 这首的内嵌格式。
+ *
+ * 三者必须来自同一份库快照：格式单独再读一次会出现「新歌词已经解析完、格式还没读回来」，
+ * 那一帧的双语配对顺序就是错的（译文当正文，闪一下再改正）。
+ */
+private data class RawLyricSource(
+    val lrc: String,
+    val translation: String,
+    /** true = 内嵌歌词里译文写在原词上方（先翻译后原词） */
+    val translationFirst: Boolean,
+)
 
 /**
  * 当前行已经点亮了几个字。

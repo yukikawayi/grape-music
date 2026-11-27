@@ -300,11 +300,14 @@ class Repository(private val db: AppDatabase) {
             // 用户手写的无时间轴纯文本不算占位，保持不动
             cur.lrc.isNotBlank() && !LyricQuality.isPlaceholder(cur.lrc) -> false
             else -> {
-                // 复用原行的 id 与用户已调好的 offset；missAt 归零 = 重新算「有歌词」
+                // 复用原行的 id 与用户已调好的 offset；missAt 归零 = 重新算「有歌词」。
+                // 内嵌歌词格式（新版替换占位行时会带默认值 false）同样按原行保留 ——
+                // 换一份正文不该把用户为这首歌选好的「原词/译文顺序」重置掉
                 db.lyricDao().save(
                     entry.copy(
                         id = cur.id,
                         offsetMs = cur.offsetMs,
+                        translationFirst = cur.translationFirst,
                         missAt = 0,
                         source = LyricSource.normalize(entry.source),
                         updatedAt = now,
@@ -336,6 +339,7 @@ class Repository(private val db: AppDatabase) {
                     lrc = "",
                     translatedLrc = cur?.translatedLrc.orEmpty(),
                     offsetMs = cur?.offsetMs ?: 0L,
+                    translationFirst = cur?.translationFirst ?: false,
                     missAt = at,
                     source = cur?.source.orEmpty(),
                     updatedAt = cur?.updatedAt ?: 0L,
@@ -366,6 +370,10 @@ class Repository(private val db: AppDatabase) {
     suspend fun clearMetaCache() = db.metaCacheDao().clearAll()
 
     suspend fun setLyricOffset(url: String, offset: Long) = db.lyricDao().updateOffset(url, offset)
+
+    /** 按曲目记内嵌歌词格式（true = 译文写在原词上方） */
+    suspend fun setLyricTranslationFirst(url: String, first: Boolean) =
+        db.lyricDao().updateTranslationFirst(url, first)
 
     /** 直链变更（旧签名 url → 稳定 /dav url）时，把歌词与歌单关联一起搬过去 */
     suspend fun renameTrackUrl(oldUrl: String, newUrl: String) {

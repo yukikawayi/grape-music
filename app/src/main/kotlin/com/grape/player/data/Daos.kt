@@ -340,6 +340,10 @@ interface LyricDao {
     @Query("UPDATE lyrics SET offsetMs = :offset WHERE url = :url")
     suspend fun updateOffset(url: String, offset: Long)
 
+    /** 内嵌歌词格式（译文是否写在原词上方）—— 按曲目存，只影响这一首的显示 */
+    @Query("UPDATE lyrics SET translationFirst = :first WHERE url = :url")
+    suspend fun updateTranslationFirst(url: String, first: Boolean)
+
     /** 直链迁移：旧 url 换成新的 /dav url 时把歌词一起搬过去 */
     @Query("UPDATE OR REPLACE lyrics SET url = :newUrl WHERE url = :oldUrl")
     suspend fun renameUrl(oldUrl: String, newUrl: String)

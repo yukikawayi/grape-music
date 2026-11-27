@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -50,6 +51,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -583,7 +585,7 @@ fun PlayerScreen(
         }
     }
 
-    // 歌词设置弹层（「词」按钮入口）：字号 / 对齐 / 卡拉OK / 全屏 / 时间偏移
+    // 歌词设置弹层（「词」按钮入口）：字号 / 对齐 / 内嵌歌词格式 / 卡拉OK / 全屏 / 时间偏移
     if (showLyricSettings) {
         val lyricSizeSetting by vm.settings.lyricFontSize.collectAsState(initial = 16)
         val lyricAlignCenter by vm.settings.lyricAlignCenter.collectAsState(initial = true)
@@ -592,13 +594,25 @@ fun PlayerScreen(
         val lyricTranslation by vm.settings.lyricTranslation.collectAsState(initial = true)
         var sizeLocal by remember { mutableStateOf<Float?>(null) }
         var offsetLocal by remember { mutableStateOf<Long?>(null) }
+        // 内嵌歌词格式：库里这一首的值（默认「先原词后翻译」）。
+        // 初值先取内存 override —— 刚勾过再打开弹层时不会先闪一下「原词在前」
+        var formatLocal by remember(current?.url) {
+            mutableStateOf(
+                vm.lyricFormatOverride.value
+                    ?.takeIf { it.first == current?.url }
+                    ?.second ?: false
+            )
+        }
 
         suspend fun reloadOffset(): Long {
             val url = current?.url ?: return 0L
             return vm.lyricOffset(url)
         }
 
-        LaunchedEffect(current?.url) { offsetLocal = reloadOffset() }
+        LaunchedEffect(current?.url) {
+            offsetLocal = reloadOffset()
+            formatLocal = current?.url?.let { vm.lyricTranslationFirst(it) } ?: false
+        }
 
         ModalBottomSheet(onDismissRequest = { showLyricSettings = false }) {
             Column(
@@ -632,6 +646,55 @@ fun PlayerScreen(
                 SwitchRow("显示翻译", "双语歌词下方显示译文行", lyricTranslation) { enabled ->
                     scope.launch { vm.settings.setLyricTranslation(enabled) }
                 }
+                // 内嵌歌词格式：同一时间点出现两行时，哪一行算原词。
+                // 判断反了的后果不是「难看一点」，而是译文变成大字正文、原词被当成小字译文
+                // 一起被「显示翻译」关掉 —— 所以给用户一个显式选项，而不是靠解析器猜文字系统。
+                // 按曲目保存：各首内嵌词的排列方式不一样（中文歌原词在上、英日歌的汉化词常反过来），
+                // 全局开关必然把另一批歌显示错。
+                Spacer(Modifier.height(8.dp))
+                Text("内嵌歌词格式", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "内嵌歌词在同一时间点有两行时，按这个顺序认定原词与翻译；只对这首歌生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                // false = 先原词后翻译（默认），true = 先翻译后原词。
+                // 两个选项**同一行**并排（各占一半宽度）：它是二选一，竖排两行会白占一行高度，
+                // 弹层里字号/偏移都在往下挤。每个选项整行可点，不只点得到那个小圆点。
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    listOf(false to "先原词后翻译", true to "先翻译后原词").forEach { option ->
+                        val pick = {
+                            formatLocal = option.first
+                            current?.url?.let { url ->
+                                vm.saveLyricTranslationFirst(url, option.first)
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { pick() }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(
+                                selected = formatLocal == option.first,
+                                // 整块可点即可，按钮自身的点击只做同一件事
+                                onClick = { pick() },
+                            )
+                            Text(
+                                text = option.second,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 // 卡拉OK
                 SwitchRow("卡拉OK扫光", "当前行逐字点亮高亮", lyricKaraoke) { enabled ->
                     scope.launch { vm.settings.setLyricKaraoke(enabled) }

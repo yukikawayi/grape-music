@@ -203,6 +203,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _offsetOverride = MutableStateFlow<Pair<String, Long>?>(null)
     val offsetOverride: StateFlow<Pair<String, Long>?> = _offsetOverride.asStateFlow()
 
+    /**
+     * 刚改过内嵌歌词格式的曲目（url → 是否译文在前）。
+     *
+     * 和偏移一样必须有内存值：写库是异步的，只靠写完后触发重载会读到旧值 ——
+     * 表现就是「勾了没反应，得重进歌词页才对」。歌词视图直接读它，勾选当场生效。
+     */
+    private val _lyricFormatOverride = MutableStateFlow<Pair<String, Boolean>?>(null)
+    val lyricFormatOverride: StateFlow<Pair<String, Boolean>?> = _lyricFormatOverride.asStateFlow()
+
     // 响度实测覆盖率统计：当前曲目 + 已覆盖的 2 秒槽位（去重）+ 是否已写库
     private var loudnessUrl = ""
     private val coveredSlots = HashSet<Int>()
@@ -744,6 +753,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 读某曲的内嵌歌词格式（true = 译文在前）—— 内存里刚改过的以内存值为准，避免读库竞态。
+     * 没有歌词行时返回 false（先原词后翻译），与老数据迁移过来的默认值一致。
+     */
+    suspend fun lyricTranslationFirst(url: String): Boolean {
+        val override = _lyricFormatOverride.value
+        if (override != null && override.first == url) return override.second
+        return withContext(Dispatchers.IO) { repo.getLyric(url)?.translationFirst ?: false }
+    }
+
+    /**
+     * 按曲目保存内嵌歌词格式（勾一次，下次播放这首自动按这个顺序解析）。
+     *
+     * 先落内存 override 再写库：写库是异步的，只等写完后重载会读到旧值（「勾了没反应」）。
+     * 歌词行不存在时先建行 —— `UPDATE lyrics` 在没有行时影响 0 行，设置会悄悄丢掉。
+     */
+    fun saveLyricTranslationFirst(url: String, first: Boolean) {
+        _lyricFormatOverride.value = url to first
+        viewModelScope.launch(Dispatchers.IO) {
+            if (repo.getLyric(url) == null) {
+                repo.saveLyric(com.grape.player.data.LyricEntry(url = url, lrc = ""))
+            }
+            repo.setLyricTranslationFirst(url, first)
+        }
+    }
+
     /** 确保歌词缓存行存在（写入 offset 时若行不存在则 insert 会失败，需要先建行）。
      *
      *  @param source 只在真要新建行时才用到 —— 正文是调用方拿来的，出处也得由它说清楚，
@@ -897,6 +932,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         lrc = embedded,
                         translatedLrc = "",
                         offsetMs = existing?.offsetMs ?: 0L,
+                        translationFirst = existing?.translationFirst ?: false,
                         source = LyricSource.EMBEDDED,
                     )
                 )
@@ -929,6 +965,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             lrc = hit.lrc,
                             translatedLrc = hit.translation,
                             offsetMs = existing?.offsetMs ?: 0L,
+                            translationFirst = existing?.translationFirst ?: false,
                             // 记下是哪家给的：以后用户说「词变了」，能直接看出换了源还是上游改了词
                             source = hit.source,
                         )
@@ -1066,6 +1103,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 lrc = lyric,
                 translatedLrc = translation,
                 offsetMs = existingLyric?.offsetMs ?: offsetMs,
+                // 内嵌歌词格式是「这首歌怎么显示」，与正文是不是被换过无关，一律继承
+                translationFirst = existingLyric?.translationFirst ?: false,
                 source = resolvedSource,
                 updatedAt = writtenAt,
             )
@@ -1108,6 +1147,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         lrc = item.embLyric,
                         translatedLrc = "",
                         offsetMs = existing?.offsetMs ?: 0L,
+                        translationFirst = existing?.translationFirst ?: false,
                         source = LyricSource.EMBEDDED,
                         updatedAt = System.currentTimeMillis(),
                     )
