@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API ≥ 31 的备份 / 设备迁移规则。
+     datastore/（settings.preferences_pb）里存有 WebDAV 明文密码：
+     - 云备份：整体排除（root 全域），另显式排除两个 datastore 可能所在域兜底；
+     - device-transfer（设备间迁移）：原规则未覆盖，这里显式排除 datastore。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="datastore" />
+        <exclude domain="external" path="datastore" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore" />
+        <exclude domain="external" path="datastore" />
+    </device-transfer>
+</data-extraction-rules>

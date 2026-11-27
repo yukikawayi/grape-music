@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 图标：渐变紫底 + 单独葡萄前景（居中，缩到 66% 安全区），
+     形状由系统/启动器遮罩决定，因此不会出现白边，也不会被裁到葡萄。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_bg" />
+    <foreground android:drawable="@mipmap/ic_launcher_fg" />
+</adaptive-icon>

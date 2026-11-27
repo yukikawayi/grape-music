@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API ≤ 30 的自动备份规则。
+     datastore/（settings.preferences_pb）里存有 WebDAV 明文密码，
+     禁止随 adb backup / 云备份带出；空的 <full-backup-content> 等于「全部备份」，必须显式排除。 -->
+<full-backup-content>
+    <exclude domain="file" path="datastore" />
+    <exclude domain="external" path="datastore" />
+</full-backup-content>
