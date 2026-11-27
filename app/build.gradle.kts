@@ -1,8 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+}
+
+// 发布签名：密钥信息放在根目录 keystore.properties（已在 .gitignore，绝不入库）。
+// 文件缺失时 release 退化为未签名构建，保证别人 clone 后仍能正常 assembleDebug。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.inputStream().use { keystoreProps.load(it) }
 }
 
 android {
@@ -19,8 +29,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 发布签名：密钥信息来自上面的 keystore.properties
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile", "grape-release.jks"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             // R8 混淆 + 资源收缩：APK 体积与冷启动的主要免费收益。
             // keep 规则见 proguard-rules.pro；serialization/Room/Media3/OkHttp/Coil
             // 自带 consumer rules，只有 jaudiotagger（2.0.1，无规则文件）需要显式 keep。

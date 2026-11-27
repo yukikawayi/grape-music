@@ -25,6 +25,11 @@ captures/
 release/
 app/release/
 
+# 发布签名（切勿入库）
+keystore.properties
+*.jks
+*.keystore
+
 # 本地数据导出（base64 编码的 SQLite 备份，勿入库）
 _db.b64
 *.b64
