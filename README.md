@@ -16,6 +16,11 @@
   <img src="https://img.shields.io/badge/minSdk-29-orange" alt="minSdk" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/yukikawayi/grape-music/releases/latest"><img src="https://img.shields.io/github/v/release/yukikawayi/grape-music?color=7F52FF&label=release" alt="Release" /></a>
+  <a href="https://github.com/yukikawayi/grape-music/releases/download/v1.0.0/grape-music-v1.0.0.apk"><img src="https://img.shields.io/badge/download-APK-3DDC84?logo=android&logoColor=white" alt="Download APK" /></a>
+</p>
+
 ---
 
 ## 这是什么
@@ -100,7 +105,13 @@
 
 ## 快速开始
 
-### 1. 准备 WebDAV
+### 1. 直接安装（推荐）
+
+不想自己编译，直接下安装包：
+
+**[下载 grape-music-v1.0.0.apk](https://github.com/yukikawayi/grape-music/releases/latest)** · 6.3 MB · 需要 Android 10（API 29）及以上，安装时需允许「安装未知来源应用」。
+
+### 2. 准备 WebDAV
 
 手机或局域网内任意设备上运行一个 WebDAV 服务，把网盘挂载进去：
 
@@ -108,13 +119,13 @@
 - CloudDrive2
 - 群晖 / 威联通 NAS 自带的 WebDAV Server
 
-### 2. 构建安装
+### 3. 从源码构建
 
 环境要求：**JDK 17+**、**Android SDK 36**（Gradle Wrapper 已内置，无需本地安装 Gradle）。
 
 ```bash
-git clone <your-repo-url>
-cd webdav播放器_forAndroid
+git clone https://github.com/yukikawayi/grape-music.git
+cd grape-music
 
 # 指向你的 SDK（或直接改 local.properties 里的 sdk.dir）
 echo "sdk.dir=/path/to/Android/Sdk" > local.properties
@@ -123,11 +134,11 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Windows 下用 `gradlew.bat assembleDebug`。Release 构建默认开启 R8 混淆与资源收缩。
+Windows 下用 `gradlew.bat assembleDebug`。需要发布签名包时，把 `keystore.properties.example` 复制为 `keystore.properties` 并填入密钥信息，再执行 `./gradlew assembleRelease`；该文件缺失时 release 会退化为未签名构建。
 
 > 仓库路径含中文时，`gradle.properties` 里的 `android.overridePathCheck=true` 已经处理了 AGP 的路径校验；若你 clone 到纯英文路径，可忽略。
 
-### 3. 首次配置
+### 4. 首次配置
 
 打开 App → 设置页，填写：
 
