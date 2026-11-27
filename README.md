@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/yukikawayi/grape-music/releases/latest"><img src="https://img.shields.io/github/v/release/yukikawayi/grape-music?color=7F52FF&label=release" alt="Release" /></a>
-  <a href="https://github.com/yukikawayi/grape-music/releases/download/v1.0.0/grape-music-v1.0.0.apk"><img src="https://img.shields.io/badge/download-APK-3DDC84?logo=android&logoColor=white" alt="Download APK" /></a>
+  <a href="https://github.com/yukikawayi/grape-music/releases/download/v1.0.2/grape-music-v1.0.2.apk"><img src="https://img.shields.io/badge/download-APK-3DDC84?logo=android&logoColor=white" alt="Download APK" /></a>
 </p>
 
 ---
@@ -116,7 +116,7 @@
 
 不想自己编译，直接下安装包：
 
-**[下载 grape-music-v1.0.0.apk](https://github.com/yukikawayi/grape-music/releases/latest)** · 6.3 MB · 需要 Android 10（API 29）及以上，安装时需允许「安装未知来源应用」。
+**[下载 grape-music-v1.0.2.apk](https://github.com/yukikawayi/grape-music/releases/download/v1.0.2/grape-music-v1.0.2.apk)** · 6.3 MB · 需要 Android 10（API 29）及以上，安装时需允许「安装未知来源应用」。
 
 ### 2. 准备 WebDAV
 
