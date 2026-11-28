@@ -123,6 +123,13 @@ fun DetailScreen(
         else -> "详情"
     }
 
+    // 专辑年份：取本专辑内各曲目年份的最大值，与音乐库专辑卡片的算法保持一致
+    // （多碟合辑里只要有一首带年份就显示，零散曲目没填也不影响）。
+    // 文件夹 / 艺术家没有「专辑年份」这个概念，恒为 0 即不显示。
+    val albumYear = remember(items, type) {
+        if (type == "album") items.maxOfOrNull { it.year } ?: 0 else 0
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
             title = {
@@ -134,8 +141,9 @@ fun DetailScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        // 多选时「已选 N 首」在下方的多选栏里显示，标题这行只留总数，不重复
-                        "${items.size} 首",
+                        // 多选时「已选 N 首」在下方的多选栏里显示，标题这行只留总数，不重复。
+                        // 专辑再加一段年份（「12 首 · 2019」），没填年份就只有曲目数。
+                        if (albumYear > 0) "${items.size} 首 · $albumYear" else "${items.size} 首",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
@@ -208,6 +216,8 @@ fun DetailScreen(
                                     showCover = songListCover,
                                     selected = selected.contains(item.url),
                                     selectionMode = selectionMode,
+                                    // 正在播放的那一首用主色标出歌名 / 艺术家·专辑
+                                    playing = item.url == playingUrl,
                                     onClick = {
                                         if (selectionMode) {
                                             selected = if (selected.contains(item.url))
@@ -323,6 +333,8 @@ private fun DetailSongRow(
     showCover: Boolean,
     selected: Boolean,
     selectionMode: Boolean,
+    /** 这首歌是不是播放器当前那一首：是则歌名 / 艺术家·专辑用主色标出来 */
+    playing: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit,
@@ -375,11 +387,18 @@ private fun DetailSongRow(
             Spacer(Modifier.width(10.dp))
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(item.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                color = if (playing) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+            )
             Text(
                 "${item.artist} · ${item.album}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (playing) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }

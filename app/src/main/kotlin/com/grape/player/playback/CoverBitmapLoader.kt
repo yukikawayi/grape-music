@@ -51,8 +51,11 @@ class CoverBitmapLoader : BitmapLoader {
         }
         val request = Request.Builder()
             .url(uri.toString())
-            // 远程封面直链可能需要 WebDAV Basic 认证（与 ExoPlayer 同一套凭据）
-            .apply { com.grape.player.data.WebDavCredentials.authHeader()?.let { header("Authorization", it) } }
+            // 远程封面直链可能需要 WebDAV Basic 认证（多源：按 url 匹配对应源的凭据）
+            .apply {
+                com.grape.player.data.WebDavCredentials.authHeaderFor(uri.toString())
+                    ?.let { header("Authorization", it) }
+            }
             .build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {

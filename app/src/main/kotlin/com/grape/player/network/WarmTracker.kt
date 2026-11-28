@@ -1,10 +1,12 @@
 package com.grape.player.network
 
+import android.net.Uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.grape.player.data.MediaCache
 import com.grape.player.data.WebDavCredentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -45,6 +47,8 @@ object WarmTracker {
         if (trimmed.isEmpty()) return
         // 只预热网络直链，file:// 之类的本地 URI 交给系统
         if (!trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true)) return
+        // 本地已有缓存分片：播放会先读本地，预热纯属浪费流量
+        if (MediaCache.hasCacheFor(Uri.parse(trimmed))) return
         synchronized(this) {
             if (isWarmLocked(trimmed) || pending.containsKey(trimmed)) return
             if (delayMs <= 0) {
@@ -93,8 +97,8 @@ object WarmTracker {
                     .url(url)
                     .header("Range", "bytes=0-$WARM_BYTES")
                     .header("User-Agent", "Mozilla/5.0")
-                    // WebDAV 直链需要 Basic 认证，否则预热请求 401 白跑
-                    .apply { WebDavCredentials.authHeader()?.let { header("Authorization", it) } }
+                    // WebDAV 直链需要 Basic 认证，否则预热请求 401 白跑（多源按 url 匹配凭据）
+                    .apply { WebDavCredentials.authHeaderFor(url)?.let { header("Authorization", it) } }
                     .build()
                 client.newCall(req).execute().use { resp ->
                     ok = resp.isSuccessful || resp.code == 206

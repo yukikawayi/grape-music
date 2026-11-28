@@ -20,6 +20,9 @@ object DataDirManager {
 
     private const val DB_NAME = "media.db"
 
+    /** 歌曲缓存目录名（与三个封面目录平级；可再生的临时数据，迁移时不搬） */
+    const val CACHE_DIR_NAME = "Cache"
+
     private val COVER_DIRS = listOf("cover", "EmbeddedCovers", "OnlineCovers")
     // onlineCoverUrl 列已在 v6 移除（Online_ 快照不再保留），路径重写只覆盖仍存在的两列
     private val COVER_COLUMNS = listOf("coverUrl", "embCoverUrl")
@@ -82,6 +85,8 @@ object DataDirManager {
         File(oldDb.absolutePath + "-wal").delete()
         File(oldDb.absolutePath + "-shm").delete()
         for (name in COVER_DIRS) File(oldBase, name).deleteRecursively()
+        // 缓存是可再生数据，不搬（几十 GB 复制一次代价太大），旧位置直接清掉省空间
+        File(oldBase, CACHE_DIR_NAME).deleteRecursively()
     }
 
     /** 把库内三列封面路径里指向旧目录的前缀替换成新目录（file:// 前缀不动，只换中间路径段） */

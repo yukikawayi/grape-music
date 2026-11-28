@@ -346,6 +346,10 @@ private fun AppNavHost(
             PlaylistScreen(
                 vm = vm,
                 onSongClick = onOpenPlayer,
+                // 歌单行「更多」弹窗里点歌手 / 专辑的「详情 ›」：跳详情路由
+                onGoto = { type, value ->
+                    navController.navigate("detail?type=${Uri.encode(type)}&value=${Uri.encode(value)}")
+                },
             )
         }
         composable("search") {

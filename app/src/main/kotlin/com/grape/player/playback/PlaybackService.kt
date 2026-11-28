@@ -23,8 +23,9 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val player = ExoPlayer.Builder(this, LoudnessRenderersFactory(this))
-            // WebDAV 直链必须带 Basic 认证头，统一在数据源层注入
-            .setMediaSourceFactory(DefaultMediaSourceFactory(WebDavDataSourceFactory()))
+            // WebDAV 直链必须带 Basic 认证头，统一在数据源层注入；音频开着本地缓存
+            // （命中就本地播放，没命中边下边存，上限见设置页「缓存」）
+            .setMediaSourceFactory(DefaultMediaSourceFactory(WebDavDataSourceFactory(enableCache = true)))
             // 自定义缓冲：默认 bufferForPlaybackMs=2500，局域网/云盘直链首播要干等 2.5s 才出声。
             // min/max 缓冲 15s/60s，起播 1s、恢复 2s 即可（局域网带宽充足，无需长缓冲）。
             .setLoadControl(
@@ -104,6 +105,9 @@ class PlaybackService : MediaSessionService() {
             release()
         }
         mediaSession = null
+        // 释放缓存实例：SimpleCache 只在 release 时把索引刷回磁盘，
+        // 不刷的话下次启动会认不出这些分片，等于白下一遍
+        com.grape.player.data.MediaCache.release()
         super.onDestroy()
     }
 }

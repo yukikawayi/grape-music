@@ -886,16 +886,19 @@ private fun QueueSheet(
     // 程序化的 scrollToItem 也算「正在滚动」，会把自己刚滚完的定位误判成用户操作。
     val dragging by queueListState.interactionSource.collectIsDraggedAsState()
 
-    // 高度固定，不随拖动变化：
-    //  1) skipPartiallyExpanded = true —— 不再有"半屏态"，一打开就是完整内容高度（否则
-    //     默认会先停在半屏，内容被切掉一截，手指往上一拖又变高）；
-    //  2) dragHandle = null —— 去掉那条可拖的横杠，避免误拖；
-    //  3) 列表自己吃掉竖向拖拽余量（见下面的 blockSheetDrag）—— 滚到顶/底之后剩下的手势
-    //     本来会传给弹层，把弹层拖高拖矮，现在被列表吞掉，列表视口高度不再变化。
-    // 关闭只走左上角 × 或点遮罩。
+    // 弹层是**固定**的：不能靠滑动关掉，也不能被拖动改变高度。
+    // material3 1.3.2 的 ModalBottomSheet 没有 sheetGesturesEnabled 开关，所以分两条路堵：
+    //  1) confirmValueChange 拒绝一切"滑到 Hidden"的变化 —— 手指下滑时弹层会回弹，但永远关不掉，
+    //     关闭只剩下 × 和点遮罩两个入口（close() 会先放开这个闸门再走 hide 动画）；
+    //  2) 列表的嵌套滚动余量被 blockSheetDrag 吃掉 —— 滚到顶再下滑不会把弹层拽下去，
+    //     行位置因此不会跟着手指跑（这就是"每首歌看起来不固定"的来源）。
+    // 同时不再给整块内容挂竖向手势消费者：那会跟列表抢手势，表现就是"滑动有时滑不动"。
+    var allowHide by remember { mutableStateOf(false) }
     val sheetState = androidx.compose.material3.rememberModalBottomSheetState(
         skipPartiallyExpanded = true,
+        confirmValueChange = { target -> allowHide || target != androidx.compose.material3.SheetValue.Hidden },
     )
+    // 列表滚到头之后剩下的竖向手势在这里被吃掉，不再向上传给弹层的 anchoredDraggable
     val blockSheetDrag = remember {
         object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
             override fun onPostScroll(
@@ -907,8 +910,10 @@ private fun QueueSheet(
     }
     // 关闭统一走 hide() 的下滑动画，动画结束再真正移除弹层
     val close: () -> Unit = {
+        allowHide = true
         scope.launch { sheetState.hide() }.invokeOnCompletion {
             if (!sheetState.isVisible) onDismiss()
+            allowHide = false
         }
     }
 
@@ -941,28 +946,23 @@ private fun QueueSheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = close,
         sheetState = sheetState,
         dragHandle = null,
     ) {
-        // 整块内容自己吃住竖向拖动：标题栏那块没有可滚动的子节点，手势本来会直达弹层，
-        // 一长按下滑就把弹层往回拽（高度塌一截）。列表内部的滚动由 LazyColumn 先消费，
-        // 这里拿不到未消费的手势，所以不影响列表滑动。
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectVerticalDragGestures { change, _ -> change.consume() }
-                },
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             // 标题栏：标题在左、叉号在右。
             // start 用 20dp —— 和下面歌曲行的 horizontal 内边距完全一致，标题文字正好压在
             // 序号那一列上；end 只用 4dp —— IconButton 自身有 48dp 触摸区，图标居中后离
             // 屏幕右边缘还有 16dp，不会贴边。
+            // 这一行没有可滚动子节点，竖向拖拽本来会直达弹层把它拽下来，所以就地吃掉。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 4.dp),
+                    .padding(start = 20.dp, end = 4.dp)
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures { change, _ -> change.consume() }
+                    },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -989,13 +989,17 @@ private fun QueueSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            // 行高固定：以前高度是"内容决定"的 —— 有艺术家的行是两行文字（更高），
+                            // 艺术家为空的行只有一行（更矮），队列里就会长短不一。现在统一 56dp，
+                            // 两行文字在其中垂直居中（1.5 倍字体也放得下）。
+                            .height(56.dp)
                             .clickable { onPick(idx) }
                             .background(
                                 if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                                 else MaterialTheme.colorScheme.surface,
                             )
-                            // 垂直留白收到 6dp：队列弹层只用来"看顺序 + 点着跳"，不需要卡片式间距
-                            .padding(horizontal = 20.dp, vertical = 6.dp),
+                            // 竖向留白由上面的固定行高提供，这里只管左右内边距
+                            .padding(horizontal = 20.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         // 序号列固定 40dp：labelMedium 下四位数（3999）在原来的 28dp 里会被裁掉
@@ -1020,7 +1024,9 @@ private fun QueueSheet(
                                 Text(
                                     it.artist,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    // 与其它页面的「正在播放」一致：歌名 / 艺术家都用主色
+                                    color = if (isCurrent) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                 )
                             }

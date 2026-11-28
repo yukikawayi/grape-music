@@ -9,8 +9,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -22,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,14 +38,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.grape.player.data.MediaCache
+import com.grape.player.data.WebDavSource
 import com.grape.player.ui.AppViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * 设置页 —— 纯 WebDAV 方案：只需配好 OpenList 的 /dav 地址与网盘根目录，
- * 扫描、播放、预热全部走同一条 WebDAV 通道，不再需要本地 strm 文件夹。
+ * 设置页 —— 纯 WebDAV 方案：配好 OpenList（或同类网盘）的 /dav 地址与根目录即可扫描播放。
+ * 支持配置**多个**源：扫描时逐个源合并进同一个媒体库，播放时按直链自动匹配对应源的认证头。
  */
 @Composable
 fun SettingsScreen(
@@ -47,10 +58,7 @@ fun SettingsScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    val webdavUrl by vm.settings.webdavUrl.collectAsState(initial = "")
-    val webdavUser by vm.settings.webdavUser.collectAsState(initial = "")
-    val webdavPass by vm.settings.webdavPass.collectAsState(initial = "")
-    val davRoot by vm.settings.davRoot.collectAsState(initial = "/quark")
+    val webDavSources by vm.settings.webDavSources.collectAsState(initial = emptyList())
     val targetLufs by vm.settings.targetLufs.collectAsState(initial = -16)
     val scanState by vm.scanState.collectAsState()
     val autoEnrich by vm.settings.autoScan.collectAsState(initial = true)
@@ -61,16 +69,20 @@ fun SettingsScreen(
     val coverSizeSetting by vm.settings.playerCoverSize.collectAsState(initial = 240)
     val coverYSetting by vm.settings.playerCoverY.collectAsState(initial = 0.5f)
 
-    var url by remember(webdavUrl) { mutableStateOf(webdavUrl) }
-    var user by remember(webdavUser) { mutableStateOf(webdavUser) }
-    var pass by remember(webdavPass) { mutableStateOf(webdavPass) }
-    var root by remember(davRoot) { mutableStateOf(davRoot) }
-    var saved by remember { mutableStateOf(false) }
+    // 新增 / 编辑 WebDAV 源弹窗：null = 关闭；id 为空 = 新增（保存时才分配 id）
+    var editingSource by remember { mutableStateOf<WebDavSource?>(null) }
+    // 删除源的二次确认
+    var pendingDeleteSource by remember { mutableStateOf<WebDavSource?>(null) }
     // 维护区状态：清库确认框 / 正在执行 / 结果提示
     var confirmWipe by remember { mutableStateOf(false) }
     var confirmDeleteOnline by remember { mutableStateOf(false) }
     var maintenanceBusy by remember { mutableStateOf(false) }
     var maintenanceMsg by remember { mutableStateOf("") }
+    // 缓存区状态：清空确认框 / 正在清理 / 结果提示 / 当前占用（-1 = 还没统计）
+    var confirmClearCache by remember { mutableStateOf(false) }
+    var cacheClearing by remember { mutableStateOf(false) }
+    var cacheMsg by remember { mutableStateOf("") }
+    var cacheUsed by remember { mutableStateOf(-1L) }
     val dynamicColor by vm.dynamicColorEnabled.collectAsState()
 
     Column(
@@ -79,71 +91,43 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
     ) {
-        Text("服务器设置", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "填写openlist/CloudDrive2/其他网盘提供的webDAV地址，如：http://127.0.0.1:5244/dav",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-
-        OutlinedTextField(
-            value = url,
-            onValueChange = { url = it; saved = false },
-            label = { Text("WebDAV 地址") },
-            placeholder = { Text("http://127.0.0.1:5244/dav") },
-            singleLine = true,
+        // 标题右侧是「新增」入口（点开一个空表单弹窗），下方是已添加的源列表
+        Row(
             modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = user,
-            onValueChange = { user = it; saved = false },
-            label = { Text("用户名") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = pass,
-            onValueChange = { pass = it; saved = false },
-            label = { Text("密码") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = root,
-            onValueChange = { root = it; saved = false },
-            label = { Text("网盘根目录") },
-            placeholder = { Text("/quark") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "OpenList 里的挂载路径，如 /quark、/123/音乐。留 / 则扫描全部挂载。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-
-        Button(
-            onClick = {
-                scope.launch {
-                    vm.saveServer(url, user, pass, root)
-                    saved = true
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(if (saved) "已保存" else "保存设置")
+            Text(
+                "服务器设置",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { editingSource = WebDavSource() }) { Text("新增") }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "可以添加多个 openlist/CloudDrive2/其他网盘提供的 webDAV 源，如：http://127.0.0.1:5244/dav。"
+                + "扫描时逐个源合并进同一个媒体库，播放时按直链自动匹配对应源的账号。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        if (webDavSources.isEmpty()) {
+            Text(
+                "还没有添加 WebDAV 源，点右上角「新增」添加一个。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+        } else {
+            // 点整行进入编辑；最右边的 ✕ 是删除（会再确认一次）
+            webDavSources.forEach { source ->
+                WebDavSourceRow(
+                    source = source,
+                    onClick = { editingSource = source },
+                    onDelete = { pendingDeleteSource = source },
+                )
+            }
         }
 
         Spacer(Modifier.height(20.dp))
@@ -240,12 +224,9 @@ fun SettingsScreen(
         Spacer(Modifier.height(8.dp))
 
         Button(
-            onClick = {
-                scope.launch { vm.saveServer(url, user, pass, root) }
-                vm.startScan(url, user, pass, root)
-            },
+            onClick = { vm.startScan(webDavSources) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = url.isNotBlank() && scanState !is AppViewModel.ScanUiState.Scanning,
+            enabled = webDavSources.any { it.isValid } && scanState !is AppViewModel.ScanUiState.Scanning,
         ) {
             Text("扫描网盘媒体库")
         }
@@ -297,7 +278,7 @@ fun SettingsScreen(
             Column(modifier = Modifier.weight(1f)) {
                 Text("数据存放位置", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "数据库、歌词缓存与封面统一存放在下面的目录（普通文件管理器可直接查看和备份）：",
+                    "数据库、歌词缓存、封面与歌曲缓存统一存放在下面的目录（普通文件管理器可直接查看和备份）：",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -340,6 +321,67 @@ fun SettingsScreen(
                 "元数据补全完成：${enrichState.total} 首",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // ===== 缓存 =====
+        // 播放过的歌在本地留一份（数据目录/Cache/），再次播放直接读本地，省掉重复流量；
+        // 超过上限从「最久没播放过」的开始删。
+        val cacheLimitMb by vm.settings.cacheLimitMb.collectAsState(initial = MediaCache.DEFAULT_LIMIT_MB)
+        // 进页面 / 改上限后重新统计一次（改上限会就地淘汰，占用会变）
+        LaunchedEffect(cacheLimitMb) {
+            cacheUsed = withContext(Dispatchers.IO) { MediaCache.usedBytes() }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("缓存", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
+        Text("歌曲缓存上限", style = MaterialTheme.typography.bodyLarge)
+        Text(
+            "播放过的歌曲会在本地留一份，再次播放直接读本地，不再重复消耗流量；"
+                + "达到上限后自动删掉最早缓存的那几首。0 = 不缓存。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        // 四挡在同一行：0 / 4GB / 8GB / 16GB
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            MediaCache.LIMIT_OPTIONS_MB.forEachIndexed { idx, mb ->
+                SegmentedButton(
+                    selected = cacheLimitMb == mb,
+                    onClick = { scope.launch { vm.settings.setCacheLimitMb(mb) } },
+                    shape = SegmentedButtonDefaults.itemShape(idx, MediaCache.LIMIT_OPTIONS_MB.size),
+                ) {
+                    Text(if (mb <= 0) "0" else "${mb / 1024}GB")
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "缓存文件位置：${MediaCache.dirPath()}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        if (cacheUsed >= 0L) {
+            Text(
+                "当前占用：${formatBytes(cacheUsed)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            enabled = !cacheClearing,
+            onClick = { confirmClearCache = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (cacheClearing) "清理中…" else "清空缓存")
+        }
+        if (cacheMsg.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                cacheMsg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
             )
         }
 
@@ -711,10 +753,219 @@ fun SettingsScreen(
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("取消") } },
         )
     }
+
+    if (confirmClearCache) {
+        AlertDialog(
+            onDismissRequest = { confirmClearCache = false },
+            title = { Text("清空缓存") },
+            text = {
+                Text(
+                    "将删除 Cache 文件夹里所有已缓存的歌曲分片（含索引文件）" +
+                        (if (cacheUsed >= 0L) "（当前占用 ${formatBytes(cacheUsed)}）" else "") +
+                        "，下次播放这些歌会重新从网盘下载。\n\n"
+                        + "不会删除网盘上的音乐、曲目库与封面；缓存上限设置保持不变。\n"
+                        + "此操作不可撤销。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClearCache = false
+                    scope.launch {
+                        cacheClearing = true
+                        val freed = withContext(Dispatchers.IO) {
+                            val before = MediaCache.usedBytes()
+                            MediaCache.clearAll()
+                            before
+                        }
+                        cacheClearing = false
+                        cacheUsed = 0L
+                        cacheMsg = if (freed <= 0L) "缓存已经是空的" else "已清空缓存，释放 ${formatBytes(freed)}"
+                    }
+                }) { Text("确认清空", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearCache = false }) { Text("取消") } },
+        )
+    }
+
+    // ===== 新增 / 编辑 WebDAV 源 =====
+    editingSource?.let { editing ->
+        WebDavSourceEditDialog(
+            initial = editing,
+            onDismiss = { editingSource = null },
+            onSave = { updated ->
+                val next = if (editing.id.isBlank()) {
+                    webDavSources + updated
+                } else {
+                    webDavSources.map { if (it.id == editing.id) updated else it }
+                }
+                scope.launch { vm.saveServer(next) }
+                editingSource = null
+            },
+        )
+    }
+
+    // ===== 删除 WebDAV 源（二次确认） =====
+    pendingDeleteSource?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteSource = null },
+            title = { Text("删除 WebDAV 源") },
+            text = {
+                Text(
+                    "确定删除「${target.displayAddress()}」？\n\n"
+                        + "只是从配置里移除这一项，网盘上的文件不会被删除。"
+                        + "已经扫进媒体库的歌曲仍保留在库里，但会失去对应账号的认证（重扫/播放可能失败），"
+                        + "建议删除后重新扫描一次。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val next = webDavSources.filterNot { it.id == target.id }
+                    pendingDeleteSource = null
+                    scope.launch { vm.saveServer(next) }
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeleteSource = null }) { Text("取消") } },
+        )
+    }
 }
 
-/** 字节数 → 人类可读（KB/MB） */
+/** 源列表里的一行：点整行编辑，右侧 ✕ 删除 */
+@Composable
+private fun WebDavSourceRow(
+    source: WebDavSource,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        onClick = onClick,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    source.displayAddress().ifBlank { "（未填写地址）" },
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "根目录 ${source.rootPath} · " + if (source.user.isBlank()) "匿名访问" else "用户 ${source.user}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Close, contentDescription = "删除这个源")
+            }
+        }
+    }
+}
+
+/**
+ * 新增 / 编辑一个 WebDAV 源：地址、用户名、密码、根目录四项 + 取消/保存。
+ * id 为空视为新增，保存时才分配 UUID；点「取消」什么都不写。
+ */
+@Composable
+private fun WebDavSourceEditDialog(
+    initial: WebDavSource,
+    onDismiss: () -> Unit,
+    onSave: (WebDavSource) -> Unit,
+) {
+    val isNew = initial.id.isBlank()
+    var url by remember { mutableStateOf(initial.url) }
+    var user by remember { mutableStateOf(initial.user) }
+    var pass by remember { mutableStateOf(initial.pass) }
+    var root by remember { mutableStateOf(initial.root) }
+    val urlOk = url.trim().let {
+        it.startsWith("http://", true) || it.startsWith("https://", true)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isNew) "新增 WebDAV 源" else "编辑 WebDAV 源") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("WebDAV 地址") },
+                    placeholder = { Text("http://127.0.0.1:5244/dav") },
+                    singleLine = true,
+                    isError = url.isNotBlank() && !urlOk,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (url.isNotBlank() && !urlOk) {
+                    Text(
+                        "地址需以 http:// 或 https:// 开头",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = user,
+                    onValueChange = { user = it },
+                    label = { Text("用户名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = pass,
+                    onValueChange = { pass = it },
+                    label = { Text("密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = root,
+                    onValueChange = { root = it },
+                    label = { Text("根目录") },
+                    placeholder = { Text("/quark") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "OpenList 里的挂载路径，如 /quark、/123/音乐。留 / 则扫描全部挂载。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = urlOk,
+                onClick = {
+                    onSave(
+                        initial.copy(
+                            id = initial.id.ifBlank { java.util.UUID.randomUUID().toString() },
+                            url = url.trim(),
+                            user = user.trim(),
+                            pass = pass,
+                            root = root.trim().ifBlank { "/" },
+                        ),
+                    )
+                },
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/** 字节数 → 人类可读（GB/MB/KB） */
 private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L * 1024L -> "%.2f GB".format(bytes / 1024.0 / 1024.0 / 1024.0)
     bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
     bytes >= 1024L -> "%.0f KB".format(bytes / 1024.0)
     else -> "$bytes B"

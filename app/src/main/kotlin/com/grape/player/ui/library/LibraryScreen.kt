@@ -544,6 +544,8 @@ fun LibraryScreen(
                 showCover = songListCover,
                 selected = selected.contains(item.url),
                 selectionMode = selectionMode,
+                // 正在播放的那一首把歌名 / 艺术家·专辑染成主色
+                playing = item.url == playingUrl,
                 onClick = {
                     if (selectionMode) {
                         selected = if (selected.contains(item.url))
@@ -956,6 +958,8 @@ private fun SongRow(
     showCover: Boolean,
     selected: Boolean,
     selectionMode: Boolean,
+    /** 这首歌是不是播放器当前那一首：是则歌名 / 艺术家 / 专辑用主色标出来 */
+    playing: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMoreClick: () -> Unit,
@@ -996,11 +1000,18 @@ private fun SongRow(
             Spacer(Modifier.width(10.dp))
         }
         Column(modifier = Modifier.weight(1f)) {
-            Text(item.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+            Text(
+                item.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                color = if (playing) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+            )
             Text(
                 "${item.artist} · ${item.album}",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (playing) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }

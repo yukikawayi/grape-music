@@ -248,7 +248,8 @@ object EmbeddedTagReader {
     ): Fetch {
         if (to < from) return Fetch(from, 0, false, -1)
         val builder = Request.Builder().url(url).header("Range", "bytes=$from-$to")
-        WebDavCredentials.authHeader()?.let { builder.header("Authorization", it) }
+        // 多源：按这个 url 去匹配它属于哪个 WebDAV 源（同一台机器上可能配了多个源）
+        WebDavCredentials.authHeaderFor(url)?.let { builder.header("Authorization", it) }
 
         return try {
             client.newCall(builder.build()).execute().use { resp ->

@@ -34,6 +34,11 @@ class LibraryScanner(
         val failed: Int,
         /** 用户中途点了「取消扫描」：只把已枚举到的条目存进库，未扫到的旧条目原样保留 */
         val cancelled: Boolean = false,
+        /**
+         * 本次写进库的 url 集合。多源扫描时由调用方把各个源的结果并起来，
+         * 最后统一做一次「服务器上已删除」清理 —— 否则扫完 A 源就会把 B 源的条目当成多余项删掉。
+         */
+        val urls: Set<String> = emptySet(),
     )
 
     suspend fun scan(
@@ -44,6 +49,12 @@ class LibraryScanner(
         onProgress: (ScanProgress) -> Unit = {},
         /** 软停止信号（用户点「取消扫描」）：命中后停止枚举，把已扫到的条目落库后返回 */
         shouldStop: () -> Boolean = { false },
+        /**
+         * 扫完是否顺手删掉「服务器上已不存在」的旧行。
+         * 多源扫描时必须传 false：单个源只看到自己那部分 url，删差集会误伤其它源，
+         * 由调用方在全部源扫完后用全量 url 统一清理。
+         */
+        deleteStale: Boolean = true,
     ): ScanResult = withContext(Dispatchers.IO) {
         val client = WebDavClient(webdavUrl, user, pass)
 
@@ -68,12 +79,23 @@ class LibraryScanner(
 
         // 取消态要在建条目之前就定下来（进度文案、写入阶段是否允许中途再中断都用它）
         val cancelBeforeWrite = stopEarly || shouldStop()
-        // 旧库按「OpenList 路径」建索引：既复用用户改过的元数据，也顺带把旧签名 url 迁移过来
-        val oldByPath = if (repo.count() > 0) {
-            repo.getAllOnce().mapNotNull { item -> pathKeyOf(item.url)?.let { it to item } }.toMap()
-        } else {
-            emptyMap()
+        // 旧库按「OpenList 路径」建索引：既复用用户改过的元数据，也顺带把旧签名 url 迁移过来。
+        // 多源之后同一个路径可能在两台机器上都存在（/quark/music/01.flac），所以索引里
+        // 同时放「host|path」和纯 path 两种键：优先精确匹配同一个 host，匹配不到再退回纯路径
+        // （换域名/换端口重扫时，元数据仍然继承得过去，跟单源时代的行为一致）。
+        val oldByHostPath = HashMap<String, MediaItem>()
+        val oldByPathOnly = HashMap<String, MediaItem>()
+        if (repo.count() > 0) {
+            for (item in repo.getAllOnce()) {
+                val path = pathKeyOf(item.url) ?: continue
+                oldByHostPath[hostOf(item.url) + "|" + path] = item
+                oldByPathOnly[path] = item
+            }
         }
+        val host = hostOf(webdavUrl)
+
+        fun prevOf(path: String): MediaItem? =
+            oldByHostPath[host + "|" + path] ?: oldByPathOnly[path]
 
         var failed = 0
         val rebuilt = mutableListOf<MediaItem>()
@@ -88,7 +110,7 @@ class LibraryScanner(
                 continue
             }
             val name = entry.name.ifEmpty { entry.path.substringAfterLast('/') }
-            val prev = oldByPath[entry.path]
+            val prev = prevOf(entry.path)
             if (prev != null && prev.url != url) {
                 renamedUrls.add(prev.url to url)
             }
@@ -194,13 +216,17 @@ class LibraryScanner(
                 video = writtenItems.count { it.isVideo },
                 failed = failed,
                 cancelled = true,
+                urls = writtenUrls,
             )
         }
 
         // 全部写完才做「服务器上已删除」的清理：取消时跳过，留给下次扫描收拾，
         // 免得用户刚点取消就看到库里少了一堆歌（差集删除本身安全，但不符合「取消就是停」的预期）。
-        onProgress(ScanProgress("正在清理已移除的文件", 0, 1))
-        repo.deleteStaleMedia(writtenUrls)
+        // 多源扫描（deleteStale = false）时这一步交给调用方，等所有源都扫完再用全量 url 清理。
+        if (deleteStale) {
+            onProgress(ScanProgress("正在清理已移除的文件", 0, 1))
+            repo.deleteStaleMedia(writtenUrls)
+        }
 
         onProgress(ScanProgress("扫描完成", unique.size, unique.size))
         ScanResult(
@@ -208,6 +234,7 @@ class LibraryScanner(
             music = unique.count { !it.isVideo },
             video = unique.count { it.isVideo },
             failed = failed,
+            urls = writtenUrls,
         )
     }
 
@@ -252,6 +279,20 @@ class LibraryScanner(
                 if (decoded.count { it.code in 0x4E00..0x9FFF } >= 2) return decoded.trim()
             }
             return null
+        }
+
+        /**
+         * 取 url 的 `scheme://host[:port]` 前缀。
+         * 多源之后要靠它区分「同一路径落在不同机器上」：pathKeyOf 只保留了路径，
+         * 两台机器都有 /quark/music/01.flac 时不能互相继承元数据。
+         */
+        fun hostOf(url: String): String {
+            val schemeEnd = url.indexOf("://")
+            if (schemeEnd < 0) return ""
+            val hostStart = schemeEnd + 3
+            val slash = url.indexOf('/', hostStart)
+            val end = if (slash < 0) url.length else slash
+            return url.substring(0, end).lowercase()
         }
 
         /**

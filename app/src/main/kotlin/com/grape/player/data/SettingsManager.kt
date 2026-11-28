@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import java.io.File
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
 
 class SettingsManager(private val context: Context, storageOverride: File? = null) {
 
@@ -42,6 +43,12 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
         private val KEY_WEBDAV_USER = stringPreferencesKey("webdav_user")
         private val KEY_WEBDAV_PASS = stringPreferencesKey("webdav_pass")
         private val KEY_DAV_ROOT = stringPreferencesKey("dav_root")
+
+        /**
+         * 多个 WebDAV 源（JSON 数组）。四个旧键（webdav_url 等）保留只读：
+         * 老版本装过一次就有值，读取时迁移成一条，用户下次保存列表后自然落成新格式。
+         */
+        private val KEY_SOURCES = stringPreferencesKey("webdav_sources")
 
         // 旧版本把网盘根目录存在 cloud_root（网盘直扫）、strm 根目录存在 strm_root，这里只读来做兼容
         private val KEY_LEGACY_CLOUD_ROOT = stringPreferencesKey("cloud_root")
@@ -78,6 +85,9 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
         // 歌曲列表是否显示封面缩略图（默认关：纯文字列表更紧凑）
         private val KEY_SONG_LIST_COVER = booleanPreferencesKey("song_list_cover")
 
+        /** 歌曲缓存上限（MB）：0 = 不缓存；缓存目录是数据目录下的 Cache/（与 OnlineCovers 同级） */
+        private val KEY_CACHE_LIMIT_MB = intPreferencesKey("cache_limit_mb")
+
         /**
          * 各视图排序设置的 key 前缀，完整 key = "sort_" + 视图 key
          * （sort_all / sort_album / sort_artist / sort_folder / sort_video）。
@@ -96,14 +106,36 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
         private val KEY_FOLDER_BROWSE_MODE = stringPreferencesKey("folder_browse_mode")
     }
 
-    val webdavUrl: Flow<String> = dataStore.data.map { it[KEY_WEBDAV_URL] ?: "" }
-    val webdavUser: Flow<String> = dataStore.data.map { it[KEY_WEBDAV_USER] ?: "" }
-    val webdavPass: Flow<String> = dataStore.data.map { it[KEY_WEBDAV_PASS] ?: "" }
-
-    /** 网盘扫描根目录（OpenList 路径，如 /quark） */
-    val davRoot: Flow<String> = dataStore.data.map {
-        it[KEY_DAV_ROOT] ?: it[KEY_LEGACY_CLOUD_ROOT] ?: "/quark"
+    /**
+     * 已配置的 WebDAV 源（可以多个，扫描时逐个合并，播放时按 url 匹配认证头）。
+     *
+     * 老版本只有一份 url/user/pass/root：这里在读取时迁移成一条（id 固定为 [WebDavSource.LEGACY_ID]），
+     * 不写回 —— 用户没打开设置页时也能正常播放和扫描；一旦在设置页保存过列表就落成新格式。
+     */
+    val webDavSources: Flow<List<WebDavSource>> = dataStore.data.map { prefs ->
+        val raw = prefs[KEY_SOURCES]
+        if (!raw.isNullOrBlank()) {
+            val parsed = runCatching {
+                Json.decodeFromString<List<WebDavSource>>(raw)
+            }.getOrNull()
+            if (parsed != null) return@map parsed.filter { it.url.isNotBlank() }
+        }
+        val legacyUrl = prefs[KEY_WEBDAV_URL].orEmpty()
+        if (legacyUrl.isBlank()) {
+            emptyList()
+        } else {
+            listOf(
+                WebDavSource.fromLegacy(
+                    url = legacyUrl,
+                    user = prefs[KEY_WEBDAV_USER].orEmpty(),
+                    pass = prefs[KEY_WEBDAV_PASS].orEmpty(),
+                    // 与旧版 davRoot 的读取顺序一致：dav_root → cloud_root → /quark
+                    root = prefs[KEY_DAV_ROOT] ?: prefs[KEY_LEGACY_CLOUD_ROOT] ?: "/quark",
+                ),
+            )
+        }
     }
+
     val targetLufs: Flow<Int> = dataStore.data.map { it[KEY_TARGET_LUFS] ?: -16 }
     /** 启用的元数据源（qq/kugou/netease 子集）：后台补全时按固定优先级联网补 Using_ 缺失字段 */
     val enabledProviders: Flow<String> = dataStore.data.map {
@@ -155,6 +187,14 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
     /** 歌曲列表显示封面缩略图（默认关） */
     val songListCover: Flow<Boolean> = dataStore.data.map { it[KEY_SONG_LIST_COVER] ?: false }
 
+    /**
+     * 歌曲缓存上限（MB，默认 4GB）。
+     * 播放过的歌在本地留一份，再次播放直接读本地；超上限按最久未播放淘汰。
+     */
+    val cacheLimitMb: Flow<Int> = dataStore.data.map {
+        it[KEY_CACHE_LIMIT_MB] ?: MediaCache.DEFAULT_LIMIT_MB
+    }
+
     /** 歌词译文行显示（默认开） */
     val lyricTranslation: Flow<Boolean> = dataStore.data.map { it[KEY_LYRIC_TRANSLATION] ?: true }
 
@@ -189,17 +229,17 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
         }.toMap()
     }
 
-    suspend fun saveWebdav(url: String, user: String, pass: String, davRoot: String) {
+    /** 保存整个 WebDAV 源列表（新增 / 编辑 / 删除都是整表覆盖，条目量很小） */
+    suspend fun setWebDavSources(sources: List<WebDavSource>) {
         dataStore.edit { prefs ->
-            prefs[KEY_WEBDAV_URL] = url
-            prefs[KEY_WEBDAV_USER] = user
-            prefs[KEY_WEBDAV_PASS] = pass
-            prefs[KEY_DAV_ROOT] = davRoot
+            prefs[KEY_SOURCES] = Json.encodeToString(sources)
+            // 顺手把旧键清掉：迁移只在「没有新键」时生效，留着旧 url 会让删除最后一个源后又冒出来
+            prefs.remove(KEY_WEBDAV_URL)
+            prefs.remove(KEY_WEBDAV_USER)
+            prefs.remove(KEY_WEBDAV_PASS)
+            prefs.remove(KEY_DAV_ROOT)
+            prefs.remove(KEY_LEGACY_CLOUD_ROOT)
         }
-    }
-
-    suspend fun setDavRoot(value: String) {
-        dataStore.edit { it[KEY_DAV_ROOT] = value }
     }
 
     suspend fun setTargetLufs(value: Int) {
@@ -256,6 +296,11 @@ class SettingsManager(private val context: Context, storageOverride: File? = nul
 
     suspend fun setSongListCover(enabled: Boolean) {
         dataStore.edit { it[KEY_SONG_LIST_COVER] = enabled }
+    }
+
+    /** 设置歌曲缓存上限（MB）：0 = 关闭缓存并清空已缓存文件 */
+    suspend fun setCacheLimitMb(mb: Int) {
+        dataStore.edit { it[KEY_CACHE_LIMIT_MB] = mb }
     }
 
     suspend fun setLyricTranslation(enabled: Boolean) {

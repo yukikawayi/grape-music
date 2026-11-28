@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -46,7 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,6 +70,7 @@ import com.grape.player.ui.components.LocatePlayingButton
 import com.grape.player.ui.library.AddToPlaylistSheet
 import com.grape.player.ui.library.MultiSelectBar
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -93,10 +93,13 @@ fun SearchScreen(
     val playingUrl by vm.playingUrl.collectAsState()
     val focusManager = LocalFocusManager.current
     val focusRequester = remember { FocusRequester() }
-    val resultState = rememberLazyListState()
+    val resultState = vm.libraryListState("search")
 
-    // 切回搜索页时保留上次输入（导航用的 restoreState 会恢复 rememberSaveable）
-    var query by rememberSaveable { mutableStateOf("") }
+    // 搜索词存在 VM 里：切到别的 tab 时本页会被弹掉，页面内的 remember 全会丢，
+    // 而结果是由「词 + 全库」实时算出来的，所以记住词就等于记住了结果。
+    // 滚动位置同样放 VM（同一份 libraryListState），回来还是原来那一段结果。
+    val query = vm.searchQuery
+    val scope = rememberCoroutineScope()
 
     // 长按歌曲进入多选（与音乐库/详情页同一套操作栏）
     var selectionMode by remember { mutableStateOf(false) }
@@ -114,9 +117,9 @@ fun SearchScreen(
     var expandArtists by remember(query) { mutableStateOf(false) }
     var expandFolders by remember(query) { mutableStateOf(false) }
 
-    // 进入页面直接聚焦，省一次点击
+    // 进入页面直接聚焦（只在还没搜过时）：回来时带着上次的词，直接弹键盘会挡住结果
     LaunchedEffect(Unit) {
-        runCatching { focusRequester.requestFocus() }
+        if (query.isBlank()) runCatching { focusRequester.requestFocus() }
     }
 
     val terms = remember(query) {
@@ -141,9 +144,11 @@ fun SearchScreen(
         OutlinedTextField(
             value = query,
             // 换关键词 = 换了搜索结果，多选是「当前结果里的选择」，跟着一起退出，
-            // 否则批量操作会作用到已经看不见的旧结果上
+            // 否则批量操作会作用到已经看不见的旧结果上。
+            // 同时把列表滚回顶部：新结果从第一条开始看，而不是停在上一组结果的位置。
             onValueChange = {
-                query = it
+                vm.setSearchQuery(it)
+                scope.launch { resultState.scrollToItem(0) }
                 if (selectionMode) {
                     selectionMode = false
                     selected = emptySet()
@@ -153,7 +158,10 @@ fun SearchScreen(
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
-                    IconButton(onClick = { query = "" }) {
+                    IconButton(onClick = {
+                        vm.setSearchQuery("")
+                        scope.launch { resultState.scrollToItem(0) }
+                    }) {
                         Icon(Icons.Filled.Clear, contentDescription = "清空")
                     }
                 }
@@ -216,6 +224,8 @@ fun SearchScreen(
                                 terms = terms,
                                 selected = selected.contains(item.url),
                                 selectionMode = selectionMode,
+                                // 正在播放的那一首用主色标出歌名 / 艺术家·专辑
+                                playing = item.url == playingUrl,
                                 onClick = {
                                     if (selectionMode) {
                                         selected = if (selected.contains(item.url))
@@ -498,6 +508,8 @@ private fun SongRow(
     terms: List<String>,
     selected: Boolean,
     selectionMode: Boolean,
+    /** 这首歌是不是播放器当前那一首：是则歌名 / 艺术家·专辑用主色标出来 */
+    playing: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -541,13 +553,17 @@ private fun SongRow(
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                // 正在播放：整体上主色（命中片段本来就是主色加粗，仍然分得清）
+                color = if (playing) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
             )
             val sub = listOf(item.artist, item.album).filter { it.isNotBlank() }.joinToString(" · ")
             if (sub.isNotBlank()) {
                 Text(
                     highlight(sub, terms),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (playing) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

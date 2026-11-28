@@ -32,7 +32,8 @@ fun VideoPlayerScreen(
     // 延后到组合完成后的协程里执行，避免在组合期（主线程）直接 prepare 造成进页掉帧。
     val player = remember(url) {
         ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(WebDavDataSourceFactory()))
+            // 视频不进歌曲缓存：整部片子塞进 Cache 只会挤掉歌曲
+            .setMediaSourceFactory(DefaultMediaSourceFactory(WebDavDataSourceFactory(enableCache = false)))
             .build()
     }
 

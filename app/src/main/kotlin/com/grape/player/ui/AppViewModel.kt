@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.grape.player.data.MediaItem
 import com.grape.player.data.Repository
+import com.grape.player.data.WebDavSource
 import com.grape.player.network.LibraryScanner
 import com.grape.player.network.MetadataScraper
 import com.grape.player.playback.LoudnessStore
@@ -69,6 +70,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun libraryGridState(viewKey: String): LazyGridState =
         libraryGridStates.getOrPut(viewKey) { LazyGridState() }
+
+    /**
+     * 搜索页上次的搜索词（空串 = 没搜过）。
+     *
+     * 为什么放 VM：搜索页是底部 tab 的一个路由，切到别的 tab 时这个 destination 会被弹掉，
+     * 页面内的 `remember` / `rememberSaveable` 全部丢失 —— 表现就是「切走再回来，搜索页空白」。
+     * 结果本身是由搜索词 + 全库实时算出来的，所以**记住词就等于记住了结果**，
+     * 列表滚动位置另用 [libraryListState]("search") 保存。
+     * 只在进程存活期间有效（重启后清空），这是刻意的：搜索是临时行为，不该写进设置文件。
+     */
+    private val _searchQuery = androidx.compose.runtime.mutableStateOf("")
+
+    /** 当前搜索词（读它是快照读，Compose 里用可直接触发重组） */
+    val searchQuery: String get() = _searchQuery.value
+
+    /** 改搜索词（唯一写入口） */
+    fun setSearchQuery(value: String) {
+        _searchQuery.value = value
+    }
 
     /**
      * 各视图的排序（viewKey → SortBy.name），与滚动状态同源：跨导航/旋转保留，进程退出即重置
@@ -1270,16 +1290,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** 保存服务器设置并立刻刷新播放层使用的认证快照，无需重启 */
-    suspend fun saveServer(url: String, user: String, pass: String, davRoot: String) {
-        settings.saveWebdav(url, user, pass, davRoot)
-        com.grape.player.data.WebDavCredentials.update(url, user, pass)
+    /** 保存整个 WebDAV 源列表（新增 / 编辑 / 删除都走这里），并立即同步给播放侧凭据快照 */
+    suspend fun saveServer(sources: List<WebDavSource>) {
+        settings.setWebDavSources(sources)
+        com.grape.player.data.WebDavCredentials.update(sources.filter { it.isValid })
     }
 
     /**
      * 扫描：先快速建库（几秒级），完成后把元数据补全丢到后台跑。
      * 后台任务按 url 逐首填空，Room 的 Flow 会让界面实时刷新。
+     *
+     * 多源：逐个源扫描并把结果合并进同一个库。单个源「删差集」会把别的源的条目当成多余项，
+     * 所以每个源都传 deleteStale = false，全部扫完再用全量 url 统一清理 ——
+     * 而且只有在「所有源都成功」时才清，某个源临时连不上不至于把它的歌全删掉。
      */
-    fun startScan(url: String, user: String, pass: String, root: String) {
+    fun startScan(sources: List<WebDavSource>) {
+        val usable = sources.filter { it.isValid }
+        if (usable.isEmpty()) {
+            _scanState.value = ScanUiState.Error("还没有可用的 WebDAV 源，请先在服务器设置里添加")
+            return
+        }
         if (_scanState.value is ScanUiState.Scanning) return
         // 扫描期间必须先让补全停下来：补全逐首写库，扫描按批 REPLACE 整行覆盖，
         // 两条线并跑时扫描会用「启动时读到的旧快照」把补全刚写好的字段盖回去。
@@ -1289,28 +1319,78 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         scanCancelRequested = false
         // 手动扫也算「本进程已经扫过」：之后再回到前台不必再自动扫一遍
         launchScanDone = true
-        com.grape.player.data.WebDavCredentials.update(url, user, pass)
+        com.grape.player.data.WebDavCredentials.update(usable)
         scanJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val autoEnrich = settings.autoScan.firstOrNull() ?: true
                 val providers = enrichConfig()
-                val result = scanner.scan(
-                    webdavUrl = url,
-                    user = user,
-                    pass = pass,
-                    davRoot = root,
-                    onProgress = { progress ->
-                        _scanState.value = ScanUiState.Scanning(progress.phase, progress.current, progress.total)
-                    },
-                    // 用户点了「取消扫描」→ 扫描器停止枚举、保存已扫到的条目后正常返回
-                    shouldStop = { scanCancelRequested },
-                )
-                if (result.cancelled) {
-                    // 用户主动取消：已扫到的条目已由扫描器 upsert 进库，这里只切状态、不启动补全
-                    _scanState.value = ScanUiState.Cancelled(result.total)
+                var total = 0
+                var music = 0
+                var video = 0
+                var failed = 0
+                var failedSources = 0
+                var cancelled = false
+                val allUrls = HashSet<String>()
+                for ((index, src) in usable.withIndex()) {
+                    if (scanCancelRequested) {
+                        cancelled = true
+                        break
+                    }
+                    // 多源时在阶段文案前标上「第几个源」，用户才知道现在扫到哪儿了
+                    val prefix = if (usable.size > 1) "[${index + 1}/${usable.size}] " else ""
+                    val result = try {
+                        scanner.scan(
+                            webdavUrl = src.url,
+                            user = src.user,
+                            pass = src.pass,
+                            davRoot = src.rootPath,
+                            onProgress = { progress ->
+                                _scanState.value = ScanUiState.Scanning(
+                                    prefix + progress.phase,
+                                    progress.current,
+                                    progress.total,
+                                )
+                            },
+                            // 用户点了「取消扫描」→ 扫描器停止枚举、保存已扫到的条目后正常返回
+                            shouldStop = { scanCancelRequested },
+                            deleteStale = false,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // 单个源失败（地址写错 / 网盘掉线）不该拖垮整次扫描，记下来继续下一个
+                        failedSources++
+                        android.util.Log.e(
+                            "AppViewModel",
+                            "scan source failed: ${src.displayAddress()}",
+                            e,
+                        )
+                        continue
+                    }
+                    total += result.total
+                    music += result.music
+                    video += result.video
+                    failed += result.failed
+                    allUrls += result.urls
+                    if (result.cancelled) {
+                        cancelled = true
+                        break
+                    }
+                }
+                if (allUrls.isEmpty() && failedSources == usable.size) {
+                    _scanState.value = ScanUiState.Error("所有 WebDAV 源都扫描失败，请检查地址与账号")
                     return@launch
                 }
-                _scanState.value = ScanUiState.Done(result.total, result.music, result.video)
+                if (!cancelled && failedSources == 0 && allUrls.isNotEmpty()) {
+                    _scanState.value = ScanUiState.Scanning("正在清理已移除的文件", 0, 1)
+                    repo.deleteStaleMedia(allUrls)
+                }
+                if (cancelled) {
+                    // 用户主动取消：已扫到的条目已由扫描器 upsert 进库，这里只切状态、不启动补全
+                    _scanState.value = ScanUiState.Cancelled(total)
+                    return@launch
+                }
+                _scanState.value = ScanUiState.Done(total, music, video)
                 if (autoEnrich) {
                     // restart=true：重扫后旧任务处理的 url 已失效，必须换新一批
                     com.grape.player.network.MetadataEnricher.start(
@@ -1444,12 +1524,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val state = _scanState.value
             if (state is ScanUiState.Scanning || state is ScanUiState.Error) return@launch
             if (scanJob?.isActive == true) return@launch
-            val url = settings.webdavUrl.firstOrNull().orEmpty()
-            if (url.isBlank()) return@launch
-            val user = settings.webdavUser.firstOrNull().orEmpty()
-            val pass = settings.webdavPass.firstOrNull().orEmpty()
-            val root = settings.davRoot.firstOrNull().orEmpty().ifBlank { "/" }
-            startScan(url, user, pass, root)
+            val sources = settings.webDavSources.firstOrNull().orEmpty().filter { it.isValid }
+            if (sources.isEmpty()) return@launch
+            startScan(sources)
         }
     }
 
